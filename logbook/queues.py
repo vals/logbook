@@ -34,11 +34,18 @@ class RabbitMQHandler(Handler):
             import kombu
         except ImportError:
             raise RuntimeError('The kombu library is required for '
-                               'the RabbitMQSubscriber.')
+                               'the RabbitMQHandler.')
+        else:
+            from librabbitmq import ConnectionError
+            self.ce = ConnectionError
+            from kombu.pools import connections, reset
+            self.reset = reset
+
         if uri:
             connection = kombu.Connection(uri)
 
-        self.queue = connection.SimpleQueue(queue)
+        self.connection_pool = connections[connection]
+        self.queue = queue
 
     def export_record(self, record):
         """Exports the record into a dictionary ready for JSON dumping.
@@ -46,10 +53,34 @@ class RabbitMQHandler(Handler):
         return record.to_dict(json_safe=True)
 
     def emit(self, record):
-        self.queue.put(self.export_record(record))
+        connection = self.connection_pool.acquire()
+
+        # TODO: This try/except block is due to the fact that the latest used
+        # connection is killed when a multiprocessing.Pool is instantiated.
+        # But that connection seem only to be used in the immidiately following
+        # log call.
+        #
+        # This is a HACK just to tempirarily get things working!
+        #
+        # The strategy is to insart a dummy logging call after making the Pool.
+        # Then consume the error.
+        # Besides being ugly and stupid, this causes a ~0.5 second halt at the
+        # Pool instantiation.
+        try:
+            queue = connection.SimpleQueue(self.queue)
+        except self.ce as e:
+            if e.message == "exchange.declare: connection closed unexpectedly":
+                return
+            else:
+                raise e
+
+        queue.put(self.export_record(record))
+
+        queue.close()
+        connection.release()
 
     def close(self):
-        self.queue.close()
+        self.reset()
 
 
 class ZeroMQHandler(Handler):
@@ -221,9 +252,9 @@ class RabbitMQSubscriber(SubscriberBase):
         self.queue.close()
 
     def recv(self, timeout=None):
-        """Receives a single record from the socket.  Timeout of 0 means nonblocking,
-        `None` means blocking and otherwise it's a timeout in seconds after which
-        the function just returns with `None`.
+        """Receives a single record from the socket.  Timeout of 0 means
+        nonblocking, `None` means blocking and otherwise it's a timeout in
+        seconds after which the function just returns with `None`.
         """
         if timeout == 0:
             try:
