@@ -36,8 +36,8 @@ class RabbitMQHandler(Handler):
             raise RuntimeError('The kombu library is required for '
                                'the RabbitMQHandler.')
         else:
-            from librabbitmq import ConnectionError
-            self.ce = ConnectionError
+            #from librabbitmq import ConnectionError
+            #self.ce = ConnectionError
             from kombu.pools import connections, reset
             self.reset = reset
 
@@ -68,13 +68,16 @@ class RabbitMQHandler(Handler):
         # Pool instantiation.
         try:
             queue = connection.SimpleQueue(self.queue)
-        except self.ce as e:
-            if e.message == "exchange.declare: connection closed unexpectedly":
+        except Exception as e:
+            if record.message == "HACK":
                 return
             else:
+                print("HACK")
+                print(record.message)
                 raise e
 
-        queue.put(self.export_record(record))
+        if record.message != "HACK":
+            queue.put(self.export_record(record))
 
         queue.close()
         connection.release()
